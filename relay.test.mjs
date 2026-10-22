@@ -81,3 +81,15 @@ test('the statement is served from the state directory, before the relay; its li
   assert.deepEqual([json.status, JSON.parse(json.body).relay], [200, 'relay.example.com']);
   assert.equal((await s.call('GET', '/feyn/v1/relay.sig')).body, 'sig');
 });
+
+test('the join routes are served, and machines are kept beside the relay\'s state', async (t) => {
+  const s = await start(t, () => ({}));
+  const call = (method, path, body) => fetch(`http://127.0.0.1:${s.port}${path}`, { method, body: body && JSON.stringify(body) });
+  const key = Buffer.alloc(32, 7).toString('base64url');
+  const r = await call('POST', '/feyn/v1/join', { name: 'omarchy', key, details: {} });
+  assert.equal(r.status, 201);
+  const { id } = await r.json();
+  assert.deepEqual(await (await call('GET', `/feyn/v1/join/${id}`)).json(), { state: 'waiting' });
+  assert.ok(existsSync(join(s.run, 'state', 'machines.json')));
+  assert.equal((await call('POST', `/feyn/v1/machines/${id}/enrolments`, { name: 'alice', at: Date.now(), sig: 'x' })).status, 403);
+});

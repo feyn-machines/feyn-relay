@@ -25,6 +25,7 @@ npm test            # node --test: blobs.test.mjs and relay.test.mjs, loopback o
 | --- | --- |
 | `relay.mjs` | The mount file. `relay.attach(server)` answers 404 for every path the relay does not know, so this file routes requests itself: the blob routes first, then `relay.request`, then 404; upgrades go to `relay.upgrade`. |
 | `statement.mjs` | The statement routes: `relay-statement.json` and its `.sig` from the state directory, byte for byte, read on every request. |
+| `machines.mjs` | The join routes: a machine's request and its code, the operator's answer, a person's ticket asked for with the machine's key, a machine leaving; `machines.json` beside the relay's state. |
 | `blobs.mjs` | The blob endpoint: its key pair, the token check, streaming to and from disk, the limits, the sweep, CORS. No dependency beyond Node. |
 | `blobs.test.mjs` | The endpoint on a loopback server with a fake clock and a fake host list. |
 | `relay.test.mjs` | `relay.mjs` as a child process: both sets of routes and the upgrade on one port. |
@@ -50,6 +51,37 @@ checks nothing; a machine checks the signature against the package key and
 refuses a relay whose statement is missing, names another host or has
 expired. At start the relay logs `statement: <relay> until <expires>`, or
 `statement: missing, machines will refuse this relay`.
+
+## Machines
+
+A machine joins the relay by its domain (`sudo feyn relay join DOMAIN` on
+the machine); the operator approves it on the admin page by its code; its
+people's connectors are then enrolled without the owner token (feyn-os,
+relay distribution design, section 4). A machine has an Ed25519 key of its
+own; its id is the base64url of SHA-256 of the raw public key, cut to 22
+characters.
+
+| Route | Does |
+| --- | --- |
+| `POST /feyn/v1/join` | `{name, key, details}` (at most 4 KB): `201 {id, code, expires_in: 3600}`; the same key while it waits, `200 {id, code, again: true}`; an approved machine, `200 {id, state: "approved"}`; `400` a bad body; `429` past 10 requests from one address in an hour, or 50 waiting in all |
+| `GET /feyn/v1/join/<id>` | `{state}`: `waiting`, `approved`, `refused` or `expired` (an hour); a refused or expired request is answered once more, then forgotten; `404` unknown |
+| `DELETE /feyn/v1/join/<id>` | signed, purpose `withdraw`: `204` |
+| `POST /feyn/v1/machines/<id>/enrolments` | signed, purpose `enrol`, `{name}` the person: `201 {ticket, expires}`, a byokit enrolment named `<machine>/<person>` with `meta: {machine, person}`, five minutes |
+| `POST /feyn/v1/machines/<id>/leave` | signed, purpose `leave`: every byokit host whose `meta.machine` is the machine is revoked, the machine is dropped; `204` |
+
+A signed body carries `at` (milliseconds since the epoch) and `sig`, the
+base64url Ed25519 signature over the UTF-8 of
+`feyn-relay\n<purpose>\n<machine id>\n<field>\n<at>`, where `<field>` is
+the person's name for `enrol` and empty otherwise. It is refused (`403`)
+when the signature fails, the machine is not approved, or `at` is more than
+five minutes from the relay's clock. The code is eight characters from
+`ABCDEFGHJKLMNPQRSTUVWXYZ23456789`, random, unique among waiting requests,
+shown `XXXX-XXXX` on the admin page.
+
+`machines.json` (mode `0600`, written to a temporary file and renamed)
+holds the approved machines and the requests not yet answered for the last
+time. Like byokit's state, it is never restored from an old copy: that
+would bring back a machine that was removed.
 
 ## The blob routes
 
