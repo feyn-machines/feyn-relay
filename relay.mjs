@@ -41,7 +41,7 @@ const log = (line) => console.log(`${new Date().toISOString()} ${line}`);
 const machines = createMachines({ file: join(dirname(STATE), 'machines.json'), relay, trustProxy: process.env.TRUST_PROXY === '1', log });
 // The operator's page; the account is made from ADMIN_USER and
 // ADMIN_PASSWORD at first start, and the relay refuses to start without it.
-const admin = await createAdmin({ file: join(dirname(STATE), 'admin.json'), env: process.env, machines, relay, log });
+const admin = await createAdmin({ file: join(dirname(STATE), 'admin.json'), env: process.env, machines, relay, trustProxy: process.env.TRUST_PROXY === '1', log });
 const blobs = BLOB_DIR
   ? await createBlobs({
       dir: BLOB_DIR,

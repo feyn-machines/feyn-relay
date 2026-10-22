@@ -42,20 +42,21 @@ async function setup(t, { env = { ADMIN_USER: 'owner', ADMIN_PASSWORD: PASSWORD 
   const f = fakes();
   const lines = [];
   const file = join(dir, 'admin.json');
-  const admin = await createAdmin({ file, env: { RELAY_HOST: HOST, ...env }, machines: f.machines, relay: f.relay, now: () => clock.ms, log: (l) => lines.push(l) });
+  const admin = await createAdmin({ file, env: { RELAY_HOST: HOST, ...env }, machines: f.machines, relay: f.relay, now: () => clock.ms, log: (l) => lines.push(l), trustProxy: true });
   const server = createServer((req, res) => { void admin.request(req, res).then((done) => { if (!done) res.writeHead(404).end('not ours'); }); });
   await new Promise((r) => server.listen(0, '127.0.0.1', r));
   t.after(async () => { server.closeAllConnections(); await new Promise((r) => server.close(r)); rmSync(dir, { recursive: true, force: true }); });
   const base = `http://127.0.0.1:${server.address().port}`;
-  const call = async (method, path, { form, cookie, origin = ORIGIN } = {}) => {
+  const call = async (method, path, { form, cookie, origin = ORIGIN, from } = {}) => {
     const headers = {};
+    if (from) headers['cf-connecting-ip'] = from;
     if (form) headers['content-type'] = 'application/x-www-form-urlencoded';
     if (cookie) headers.cookie = cookie;
     if (origin) headers.origin = origin;
     const r = await fetch(base + path, { method, headers, redirect: 'manual', ...(form ? { body: new URLSearchParams(form).toString() } : {}) });
     return { status: r.status, cookie: r.headers.get('set-cookie'), location: r.headers.get('location'), csp: r.headers.get('content-security-policy'), referrer: r.headers.get('referrer-policy'), text: await r.text() };
   };
-  const signIn = (user = 'owner', password = PASSWORD) => call('POST', '/admin/sign-in', { form: { user, password } });
+  const signIn = (user = 'owner', password = PASSWORD, from) => call('POST', '/admin/sign-in', { form: { user, password }, from });
   const session = async (password = PASSWORD) => {
     const r = await signIn('owner', password);
     assert.equal(r.status, 303, r.text);
@@ -243,4 +244,28 @@ test('pages let the browser send the relay\'s own Origin on their forms; Origin:
   assert.equal((await s.call('POST', '/admin/approve', { form: { id: 'reqAAAAAAAAAAAAAAAAAAA' }, cookie, origin: 'null' })).status, 403);
   assert.equal((await s.call('POST', '/admin/sign-in', { form: { user: 'owner', password: PASSWORD }, origin: 'null' })).status, 403);
   assert.deepEqual(s.f.done, []);
+});
+
+test('one sign-in at a time: concurrent attempts are refused, not hashed past the lock', async (t) => {
+  const s = await setup(t);
+  for (let i = 0; i < LIMITS.failures - 1; i++) assert.equal((await s.signIn('owner', `wrong ${i}`)).status, 403);
+  // A burst of wrong ones at once: only one is hashed, and it is the tenth, which locks.
+  const burst = await Promise.all(Array.from({ length: 6 }, (_, i) => s.signIn('owner', `burst ${i}`)));
+  assert.deepEqual(burst.map((r) => r.status).sort(), [403, 429, 429, 429, 429, 429]);
+  assert.equal((await s.signIn()).status, 429);
+});
+
+test('the lock is per address: another address still signs in', async (t) => {
+  const s = await setup(t);
+  for (let i = 0; i < LIMITS.failures; i++) assert.equal((await s.signIn('owner', `wrong ${i}`, '198.51.100.66')).status, 403);
+  assert.equal((await s.signIn('owner', PASSWORD, '198.51.100.66')).status, 429);
+  assert.equal((await s.signIn('owner', PASSWORD, '203.0.113.5')).status, 303);
+});
+
+test('a ceiling for all addresses together: past it sign-in is locked for everyone', async (t) => {
+  const s = await setup(t);
+  for (let i = 0; i < LIMITS.globalFailures; i++) assert.equal((await s.signIn('owner', `wrong ${i}`, `10.7.${Math.floor(i / 4)}.${i % 4}`)).status, 403);
+  assert.equal((await s.signIn('owner', PASSWORD, '203.0.113.5')).status, 429);
+  s.tick(LIMITS.lockMs);
+  assert.equal((await s.signIn('owner', PASSWORD, '203.0.113.5')).status, 303);
 });

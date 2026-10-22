@@ -105,7 +105,10 @@ sign out).
 - The password is kept as scrypt with its salt in `admin.json` (`0600`).
   A session is a random cookie (`HttpOnly; Secure; SameSite=Strict;
   Path=/admin`, 12 hours) kept in memory; a restart signs the operator out.
-  Ten wrong sign-ins within 15 minutes lock sign-in for 15 minutes.
+  One sign-in is checked at a time (others are answered `429`). Ten wrong
+  sign-ins from one address within 15 minutes lock that address out for 15
+  minutes; a hundred from all addresses together lock sign-in for everyone
+  for 15 minutes. A reset lifts every lock.
 - Every `POST` must carry `Origin: https://<RELAY_HOST>`, and every one but
   sign-in and reset the session cookie; otherwise `403`.
 - A forgotten password: on the relay's server,

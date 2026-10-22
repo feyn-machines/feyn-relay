@@ -25,13 +25,15 @@ import { createHash, randomBytes, scrypt as scryptCb, timingSafeEqual } from 'no
 import { existsSync, readFileSync, realpathSync, renameSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { promisify } from 'node:util';
+import { clientAddress } from './address.mjs';
 
 const scrypt = promisify(scryptCb);
 
 export const LIMITS = {
   password: 12, // characters, at least
   sessionMs: 12 * 3600_000,
-  failures: 10, // wrong sign-ins within the window lock sign-in
+  failures: 10, // wrong sign-ins from one address within the window lock it out
+  globalFailures: 100, // wrong sign-ins from all addresses within the window lock sign-in for all
   failureWindowMs: 15 * 60_000,
   lockMs: 15 * 60_000,
   resetMs: 15 * 60_000,
@@ -98,7 +100,7 @@ const button = (action, id, label) => `<form method="post" action="/admin/${acti
 // `machines` is machines.mjs's admin side; `relay` is byokit's Relay, of
 // which `hosts` and `revoke` are used. Rejects when the account cannot be
 // set up. `request(req, res)` answers true when the request was this module's.
-export async function createAdmin({ file, env, machines, relay, now = Date.now, log = () => {} }) {
+export async function createAdmin({ file, env, machines, relay, now = Date.now, trustProxy = false, log = () => {} }) {
   const host = env.RELAY_HOST;
   if (!host) throw new Error('RELAY_HOST is required: the relay\'s domain, for the admin page\'s Origin check and reset link');
   const origin = `https://${host}`;
@@ -114,8 +116,12 @@ export async function createAdmin({ file, env, machines, relay, now = Date.now, 
 
   // token -> expiry, in memory.
   const sessions = new Map();
-  let failures = [];
-  let lockedUntil = 0;
+  // Wrong sign-ins: per client address, and for all of them together as a
+  // backstop. One sign-in is checked at a time, so a burst cannot pass the
+  // count while its hashes are being computed.
+  const lockouts = new Map(); // address -> {failures: [times], until}
+  const everyone = { failures: [], until: 0 };
+  let signingIn = false;
 
   function signedIn(req) {
     const m = new RegExp(`(?:^|;\\s*)${COOKIE}=([A-Za-z0-9_-]{43})(?:;|$)`).exec(req.headers.cookie ?? '');
@@ -186,19 +192,35 @@ export async function createAdmin({ file, env, machines, relay, now = Date.now, 
   async function signIn(req, res) {
     const f = await form(req);
     const t = now();
-    if (t < lockedUntil) return html(res, 429, 'Relay admin', signInPage('Sign-in is locked for a quarter of an hour after too many wrong passwords.'));
-    const a = readAccount(file);
-    const user = f?.get('user') ?? '', password = f?.get('password') ?? '';
-    // The hash is computed for a wrong name too, so both take as long.
-    const right = await passwordIs(a, password) && user === a.user;
-    if (!right) {
-      failures = [...failures.filter((x) => t - x < LIMITS.failureWindowMs), t];
-      if (failures.length >= LIMITS.failures) { lockedUntil = t + LIMITS.lockMs; failures = []; log('admin: sign-in locked after wrong passwords'); }
-      return html(res, 403, 'Relay admin', signInPage('Wrong name or password.'));
-    }
-    const token = randomBytes(32).toString('base64url');
-    sessions.set(token, t + LIMITS.sessionMs);
-    back(res, { 'set-cookie': `${COOKIE}=${token}; HttpOnly; Secure; SameSite=Strict; Path=/admin; Max-Age=${LIMITS.sessionMs / 1000}` });
+    const address = clientAddress(req, trustProxy);
+    for (const [a, l] of lockouts) if (t >= l.until && !l.failures.some((x) => t - x < LIMITS.failureWindowMs)) lockouts.delete(a);
+    const mine = lockouts.get(address) ?? { failures: [], until: 0 };
+    if (t < mine.until || t < everyone.until) return html(res, 429, 'Relay admin', signInPage('Sign-in is locked for a quarter of an hour after too many wrong passwords.'));
+    if (signingIn) return html(res, 429, 'Relay admin', signInPage('Another sign-in is being checked; try again.'));
+    signingIn = true;
+    try {
+      // The attempt counts as wrong until the password is found right.
+      const record = (l, limit) => {
+        l.failures = [...l.failures.filter((x) => t - x < LIMITS.failureWindowMs), t];
+        if (l.failures.length >= limit) { l.until = t + LIMITS.lockMs; return true; }
+        return false;
+      };
+      const before = { mine: { ...mine }, everyone: { ...everyone } };
+      if (record(mine, LIMITS.failures)) log(`admin: sign-in locked for ${address} after wrong passwords`);
+      if (record(everyone, LIMITS.globalFailures)) log('admin: sign-in locked for everyone after wrong passwords');
+      lockouts.set(address, mine);
+      const a = readAccount(file);
+      const user = f?.get('user') ?? '', password = f?.get('password') ?? '';
+      // The hash is computed for a wrong name too, so both take as long.
+      const right = await passwordIs(a, password) && user === a.user;
+      if (!right) return html(res, 403, 'Relay admin', signInPage('Wrong name or password.'));
+      // Right after all: the attempt was no failure, and a lock it set is undone.
+      Object.assign(mine, before.mine);
+      Object.assign(everyone, before.everyone);
+      const token = randomBytes(32).toString('base64url');
+      sessions.set(token, t + LIMITS.sessionMs);
+      back(res, { 'set-cookie': `${COOKIE}=${token}; HttpOnly; Secure; SameSite=Strict; Path=/admin; Max-Age=${LIMITS.sessionMs / 1000}` });
+    } finally { signingIn = false; }
   }
 
   async function reset(req, res) {
@@ -211,7 +233,9 @@ export async function createAdmin({ file, env, machines, relay, now = Date.now, 
     const { reset: _, ...rest } = a;
     writeAccount(file, await withPassword({ ...rest, user }, f.get('password')));
     sessions.clear();
-    lockedUntil = 0;
+    lockouts.clear();
+    everyone.until = 0;
+    everyone.failures = [];
     log(`admin: password of ${user} reset`);
     back(res);
   }
