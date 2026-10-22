@@ -3,7 +3,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { createServer, request } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -65,4 +65,19 @@ test('without BLOB_DIR the relay runs as it did: no blob routes', async (t) => {
   assert.equal((await s.call('GET', '/feyn/v1/blobs/key')).status, 404);
   assert.equal((await s.call('GET', '/relay/v1/hosts', { authorization: 'Bearer owner-token-for-this-test' })).status, 200);
   assert.equal(existsSync(join(s.run, 'state', 'blob-key.json')), false);
+});
+
+test('the statement is served from the state directory, before the relay; its line is logged at start', async (t) => {
+  const none = await start(t, () => ({}));
+  assert.ok(none.out.join('').includes('statement: missing, machines will refuse this relay'), none.out.join(''));
+  assert.equal((await none.call('GET', '/feyn/v1/relay')).status, 404);
+  const s = await start(t, (run) => {
+    writeFileSync(join(run, 'state', 'relay-statement.json'), '{"v":1,"relay":"relay.example.com","issued":"2026-10-22","expires":"2027-10-22"}');
+    writeFileSync(join(run, 'state', 'relay-statement.json.sig'), 'sig');
+    return {};
+  });
+  assert.ok(s.out.join('').includes('statement: relay.example.com until 2027-10-22'), s.out.join(''));
+  const json = await s.call('GET', '/feyn/v1/relay');
+  assert.deepEqual([json.status, JSON.parse(json.body).relay], [200, 'relay.example.com']);
+  assert.equal((await s.call('GET', '/feyn/v1/relay.sig')).body, 'sig');
 });

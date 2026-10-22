@@ -24,12 +24,32 @@ npm test            # node --test: blobs.test.mjs and relay.test.mjs, loopback o
 | Path | What |
 | --- | --- |
 | `relay.mjs` | The mount file. `relay.attach(server)` answers 404 for every path the relay does not know, so this file routes requests itself: the blob routes first, then `relay.request`, then 404; upgrades go to `relay.upgrade`. |
+| `statement.mjs` | The statement routes: `relay-statement.json` and its `.sig` from the state directory, byte for byte, read on every request. |
 | `blobs.mjs` | The blob endpoint: its key pair, the token check, streaming to and from disk, the limits, the sweep, CORS. No dependency beyond Node. |
 | `blobs.test.mjs` | The endpoint on a loopback server with a fake clock and a fake host list. |
 | `relay.test.mjs` | `relay.mjs` as a child process: both sets of routes and the upgrade on one port. |
 | `probe/reenrol.test.mjs` | byokit across a host's `leave()` and a new enrolment with the same key (see "Re-enrolment"). |
 | `Dockerfile`, `compose.yml` | `node:24-slim`, `npm ci --ignore-scripts`; read-only root, all capabilities dropped, 256 MB, bound to `127.0.0.1:7300`; volumes `./state` and `./blobs`. |
 | `package-lock.json` | `@byokit/relay` 0.6.0 and everything under it, at the versions of the lockfile deployed on 2026-10-11. |
+
+## The statement
+
+The owner's statement that this relay's domain is one of the owner's relays
+(feyn-os, `docs/superpowers/specs/2026-10-22-relay-distribution-design.md`,
+section 3), made on the owner's Mac with `sign-relay DOMAIN` and put in the
+state directory beside `RELAY_STATE`:
+
+| Route | Serves | Type |
+| --- | --- | --- |
+| `GET`, `HEAD /feyn/v1/relay` | `relay-statement.json` | `application/json` |
+| `GET`, `HEAD /feyn/v1/relay.sig` | `relay-statement.json.sig` | `application/octet-stream` |
+
+The bytes are served exactly as stored, and read again on each request: a
+renewed statement needs no restart. A missing file is `404`. The relay
+checks nothing; a machine checks the signature against the package key and
+refuses a relay whose statement is missing, names another host or has
+expired. At start the relay logs `statement: <relay> until <expires>`, or
+`statement: missing, machines will refuse this relay`.
 
 ## The blob routes
 
