@@ -18,8 +18,8 @@ services:
     ports:
       - "127.0.0.1:7300:7300"
     volumes:
-      # The relay's state file, machines.json, admin.json, the statement
-      # (relay-statement.json and its .sig) and the blob endpoint's key pair.
+      # The relay's state file, machines.json, admin.json and the blob
+      # endpoint's key pair.
       - ./state:/state
       # Ciphertext files, each for one fetch or 24 hours; at most 2 GiB.
       - ./blobs:/blobs

@@ -67,19 +67,14 @@ test('without BLOB_DIR the relay runs as it did: no blob routes', async (t) => {
   assert.equal(existsSync(join(s.run, 'state', 'blob-key.json')), false);
 });
 
-test('the statement is served from the state directory, before the relay; its line is logged at start', async (t) => {
-  const none = await start(t, () => ({}));
-  assert.ok(none.out.join('').includes('statement: missing, machines will refuse this relay'), none.out.join(''));
-  assert.equal((await none.call('GET', '/feyn/v1/relay')).status, 404);
+test('no relay statement: its routes are gone and nothing about it is logged', async (t) => {
   const s = await start(t, (run) => {
-    writeFileSync(join(run, 'state', 'relay-statement.json'), '{"v":1,"relay":"relay.example.com","issued":"2026-10-22","expires":"2027-10-22"}');
-    writeFileSync(join(run, 'state', 'relay-statement.json.sig'), 'sig');
+    writeFileSync(join(run, 'state', 'relay-statement.json'), '{"v":1}');
     return {};
   });
-  assert.ok(s.out.join('').includes('statement: relay.example.com until 2027-10-22'), s.out.join(''));
-  const json = await s.call('GET', '/feyn/v1/relay');
-  assert.deepEqual([json.status, JSON.parse(json.body).relay], [200, 'relay.example.com']);
-  assert.equal((await s.call('GET', '/feyn/v1/relay.sig')).body, 'sig');
+  assert.ok(!s.out.join('').includes('statement'), s.out.join(''));
+  assert.equal((await s.call('GET', '/feyn/v1/relay')).status, 404);
+  assert.equal((await s.call('GET', '/feyn/v1/relay.sig')).status, 404);
 });
 
 test('the join routes are served, and machines are kept beside the relay\'s state', async (t) => {

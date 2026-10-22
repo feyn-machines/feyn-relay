@@ -3,21 +3,19 @@
 // relay routes ciphertext between machines and devices and keeps no
 // messages; the blob endpoint keeps ciphertext files for one fetch or a day;
 // the OAuth callback keeps a code, in memory, for one fetch or ten minutes;
-// the statement routes serve the owner's signed statement from the state
-// directory (relay distribution design, section 3); the join routes let a
-// machine join and ask for its people's tickets (section 4); the admin page
-// lets the operator answer them (section 5).
+// the join routes let a machine join and ask for its people's tickets
+// (relay distribution design, section 4); the admin page lets the operator
+// answer them (section 5).
 //
 // `relay.attach(server)` answers 404 for every path the relay does not
-// know, so this file routes requests itself: the statement, the join
-// routes, the admin page, the OAuth callback and blobs first, then the relay.
+// know, so this file routes requests itself: the join routes, the admin
+// page, the OAuth callback and blobs first, then the relay.
 import { createServer } from 'node:http';
 import { readFileSync, writeFileSync, renameSync, existsSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { Relay } from '@byokit/relay';
 import { createBlobs } from './blobs.mjs';
 import { createOauth } from './oauth.mjs';
-import { createStatement } from './statement.mjs';
 import { createMachines } from './machines.mjs';
 import { createAdmin } from './admin.mjs';
 
@@ -52,10 +50,6 @@ const blobs = BLOB_DIR
     })
   : undefined;
 
-// The owner's statement for this relay, read from disk on every request.
-const statement = createStatement({ dir: dirname(STATE) });
-console.log(statement.describe());
-
 // Where a service's OAuth sign-in comes back to: a code kept for one fetch.
 const oauth = createOauth();
 
@@ -66,7 +60,6 @@ server.requestTimeout = 30 * 60_000;
 server.on('upgrade', (req, socket, head) => { if (!relay.upgrade(req, socket, head)) socket.destroy(); });
 server.on('request', (req, res) => {
   void (async () => {
-    if (await statement.request(req, res)) return;
     if (await machines.request(req, res)) return;
     if (await admin.request(req, res)) return;
     if (await oauth.request(req, res)) return;

@@ -3,13 +3,13 @@
 The relay deployment of the remote client: `@byokit/relay` on a plain Node
 HTTP server, and, in the same process, the blob endpoint of the
 Feyn client design (feyn-os, `docs/superpowers/specs/2026-10-12-feyn-client-design.md`),
-section 6.3, and the statement, join routes and admin page of the relay
+section 6.3, and the join routes and admin page of the relay
 distribution design (feyn-os, `docs/superpowers/specs/2026-10-22-relay-distribution-design.md`). The relay routes ciphertext between machines and devices and
 keeps no messages. The blob endpoint keeps ciphertext files, each for one
 fetch or 24 hours. Nothing here holds a key that opens anything.
 
-Status: 0.3.1 written and tested on loopback on 2026-10-22; 0.3.0 was the first image
-pushed. **Not deployed.** What runs on the relay server today is the
+Status: 0.3.2 written and tested on loopback on 2026-10-22; 0.3.0 was the first image
+pushed; 0.3.2 drops the relay statement (owner, 2026-10-22: not for now). **Not deployed.** What runs on the relay server today is the
 mount file without the blob routes; that copy stays in the probe's record
 (feyn-os, `docs/research/2026-10-11-byokit-probe/relay-deploy/`) as what was
 deployed on 2026-10-11. Whether the Cloudflare tunnel in front of the relay
@@ -25,7 +25,6 @@ npm test            # node --test: every *.test.mjs, loopback only
 | Path | What |
 | --- | --- |
 | `relay.mjs` | The mount file. `relay.attach(server)` answers 404 for every path the relay does not know, so this file routes requests itself: the blob routes first, then `relay.request`, then 404; upgrades go to `relay.upgrade`. |
-| `statement.mjs` | The statement routes: `relay-statement.json` and its `.sig` from the state directory, byte for byte, read on every request. |
 | `machines.mjs` | The join routes: a machine's request and its code, the operator's answer, a person's ticket asked for with the machine's key, a machine leaving; `machines.json` beside the relay's state. |
 | `address.mjs` | The client's address behind the proxy, for the join routes' and the admin page's limits. |
 | `admin.mjs` | The admin page at `/admin`, and `node admin.mjs reset-password`. |
@@ -35,25 +34,6 @@ npm test            # node --test: every *.test.mjs, loopback only
 | `Dockerfile`, `compose.yml` | `node:24-slim`, `npm ci --ignore-scripts`; read-only root, all capabilities dropped, 256 MB, bound to `127.0.0.1:7300`; volumes `./state` and `./blobs`. `compose.yml` pulls `ghcr.io/feyn-machines/feyn-relay:latest`, or builds this directory with `docker compose build`. |
 | `.github/workflows/image.yml`, `scripts/check-version` | The image, built by a tag (see "The image"). |
 | `package-lock.json` | `@byokit/relay` 0.6.0 and everything under it, at the versions of the lockfile deployed on 2026-10-11. |
-
-## The statement
-
-The owner's statement that this relay's domain is one of the owner's relays
-(feyn-os, `docs/superpowers/specs/2026-10-22-relay-distribution-design.md`,
-section 3), made on the owner's Mac with `sign-relay DOMAIN` and put in the
-state directory beside `RELAY_STATE`:
-
-| Route | Serves | Type |
-| --- | --- | --- |
-| `GET`, `HEAD /feyn/v1/relay` | `relay-statement.json` | `application/json` |
-| `GET`, `HEAD /feyn/v1/relay.sig` | `relay-statement.json.sig` | `application/octet-stream` |
-
-The bytes are served exactly as stored, and read again on each request: a
-renewed statement needs no restart. A missing file is `404`. The relay
-checks nothing; a machine checks the signature against the package key and
-refuses a relay whose statement is missing, names another host or has
-expired. At start the relay logs `statement: <relay> until <expires>`, or
-`statement: missing, machines will refuse this relay`.
 
 ## Machines
 
@@ -241,15 +221,10 @@ For a new relay, the owner:
 
 1. Points a domain at the server (the Cloudflare tunnel today), to
    `127.0.0.1:7300`.
-2. On the Mac, where the package key is, runs `sign-relay DOMAIN` (in
-   `~/projects/feyn-machine/feyn-pkg`, outside git), and copies
-   `relay-statement.json` and `relay-statement.json.sig` into `state/`.
-   Without them every machine refuses the relay. A statement is renewed the
-   same way before it expires; no restart is needed.
-3. Adds `https://DOMAIN/oauth/google/callback` to the Google app's
+2. Adds `https://DOMAIN/oauth/google/callback` to the Google app's
    authorised redirect URIs: a Google sign-in comes back only to the relay
    its machine uses.
-4. Writes `.env`:
+3. Writes `.env`:
 
    ```
    RELAY_OWNER_TOKEN=<random, kept; used by nobody>
@@ -258,10 +233,10 @@ For a new relay, the owner:
    ADMIN_PASSWORD=<at least 12 characters>
    ```
 
-5. `docker compose pull && docker compose up -d`; the log shows
-   `statement: DOMAIN until <date>` and `admin: account <name> set up`.
+4. `docker compose pull && docker compose up -d`; the log shows
+   `admin: account <name> set up`.
    `ADMIN_PASSWORD` may then be removed from `.env`.
-6. Signs in at `https://DOMAIN/admin`. A machine joins with
+5. Signs in at `https://DOMAIN/admin`. A machine joins with
    `sudo feyn relay join DOMAIN` and is approved there by its code.
 
 Updating is `docker compose pull && docker compose up -d`. `state/` carries
@@ -269,10 +244,10 @@ over. An old copy of `state/` is never restored: it would bring back hosts
 and machines that were removed.
 
 The relay running on the owner's server since 2026-10-11 keeps its `.env`
-and `state/`; it gains `RELAY_HOST`, `ADMIN_USER`, `ADMIN_PASSWORD`, the two
-statement files and a `blobs/` directory, and `compose.yml` is replaced.
-Check afterwards: `curl -s http://127.0.0.1:7300/feyn/v1/blobs/key` and
-`/feyn/v1/relay` on the server and through the tunnel; the hosts enrolled by
+and `state/`; it gains `RELAY_HOST`, `ADMIN_USER`, `ADMIN_PASSWORD` and a
+`blobs/` directory, and `compose.yml` is replaced.
+Check afterwards: `curl -s http://127.0.0.1:7300/feyn/v1/blobs/key` on
+the server and through the tunnel; the hosts enrolled by
 hand are listed under "Other hosts", online; `state/blob-key.json`,
 `admin.json` and `machines.json` have mode `0600`. Then, from the
 experiment host, upload 51 MiB with a token made there and fetch it once
