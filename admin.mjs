@@ -125,7 +125,7 @@ export async function createAdmin({ file, env, machines, relay, now = Date.now, 
     return m[1];
   }
   function html(res, status, title, body, script) {
-    res.writeHead(status, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store', 'referrer-policy': 'no-referrer', 'x-frame-options': 'DENY', 'content-security-policy': csp(script) }).end(page(title, body, script));
+    res.writeHead(status, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store', 'referrer-policy': 'same-origin', 'x-frame-options': 'DENY', 'content-security-policy': csp(script) }).end(page(title, body, script));
   }
   const back = (res, headers = {}) => res.writeHead(303, { location: '/admin', 'cache-control': 'no-store', ...headers }).end();
   const message = (res, status, text) => html(res, status, 'Relay admin', `<h1>Relay admin</h1><p>${esc(text)}</p><p><a href="/admin">Back</a></p>`);

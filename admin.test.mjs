@@ -53,7 +53,7 @@ async function setup(t, { env = { ADMIN_USER: 'owner', ADMIN_PASSWORD: PASSWORD 
     if (cookie) headers.cookie = cookie;
     if (origin) headers.origin = origin;
     const r = await fetch(base + path, { method, headers, redirect: 'manual', ...(form ? { body: new URLSearchParams(form).toString() } : {}) });
-    return { status: r.status, cookie: r.headers.get('set-cookie'), location: r.headers.get('location'), csp: r.headers.get('content-security-policy'), text: await r.text() };
+    return { status: r.status, cookie: r.headers.get('set-cookie'), location: r.headers.get('location'), csp: r.headers.get('content-security-policy'), referrer: r.headers.get('referrer-policy'), text: await r.text() };
   };
   const signIn = (user = 'owner', password = PASSWORD) => call('POST', '/admin/sign-in', { form: { user, password } });
   const session = async (password = PASSWORD) => {
@@ -231,4 +231,16 @@ test('node admin.mjs reset-password prints the link for RELAY_HOST, from the sta
   const none = spawnSync(process.execPath, [join(import.meta.dirname, 'admin.mjs'), 'reset-password'], { env: { PATH: process.env.PATH, RELAY_STATE: join(empty, 'relay.json'), RELAY_HOST: HOST }, encoding: 'utf8' });
   assert.notEqual(none.status, 0);
   assert.match(none.stderr, /no admin account/);
+});
+
+test('pages let the browser send the relay\'s own Origin on their forms; Origin: null stays refused', async (t) => {
+  const s = await setup(t);
+  const cookie = await s.session();
+  // With no-referrer a browser sends Origin: null on a form's POST, and every form would be refused.
+  for (const r of [await s.call('GET', '/admin'), await s.call('GET', '/admin', { cookie }), await s.call('GET', '/admin/reset'), await s.signIn('owner', 'wrong password!')]) {
+    assert.equal(r.referrer, 'same-origin');
+  }
+  assert.equal((await s.call('POST', '/admin/approve', { form: { id: 'reqAAAAAAAAAAAAAAAAAAA' }, cookie, origin: 'null' })).status, 403);
+  assert.equal((await s.call('POST', '/admin/sign-in', { form: { user: 'owner', password: PASSWORD }, origin: 'null' })).status, 403);
+  assert.deepEqual(s.f.done, []);
 });
