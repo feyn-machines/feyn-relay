@@ -27,6 +27,7 @@ npm test            # node --test: blobs.test.mjs and relay.test.mjs, loopback o
 | `blobs.mjs` | The blob endpoint: its key pair, the token check, streaming to and from disk, the limits, the sweep, CORS. No dependency beyond Node. |
 | `blobs.test.mjs` | The endpoint on a loopback server with a fake clock and a fake host list. |
 | `relay.test.mjs` | `relay.mjs` as a child process: both sets of routes and the upgrade on one port. |
+| `probe/reenrol.test.mjs` | byokit across a host's `leave()` and a new enrolment with the same key (see "Re-enrolment"). |
 | `Dockerfile`, `compose.yml` | `node:24-slim`, `npm ci --ignore-scripts`; read-only root, all capabilities dropped, 256 MB, bound to `127.0.0.1:7300`; volumes `./state` and `./blobs`. |
 | `package-lock.json` | `@byokit/relay` 0.6.0 and everything under it, at the versions of the lockfile deployed on 2026-10-11. |
 
@@ -90,6 +91,25 @@ Sizes are not padded.
 "Sent whole" is the moment the last byte has left this process. A proxy in
 front can still lose the tail on its own leg; the side that fetched then
 asks for the file to be uploaded again.
+
+## Re-enrolment
+
+What byokit 0.6.0 keeps of a host across `leave()` and a new enrolment with
+the same key, checked on loopback on 2026-10-22 by
+`probe/reenrol.test.mjs` (the relay distribution plan's task 1; feyn-os,
+spec `2026-10-22-relay-distribution-design.md`, section 4.6):
+
+- The host's id is unchanged: it is a hash of the host's key.
+- A device paired before reaches the host again with the grant it already
+  holds; it does **not** pair again. A grant lives on the host (its grant
+  store) and on the device; the relay only routes by host id.
+- `leave()` removes the host's push addresses on the relay (byokit's
+  `removeHost`); a device's push address is stored again when it next
+  subscribes.
+- A host that is still enrolled ignores a new ticket: byokit only reads
+  `enrol` for a host it does not know, so the host keeps its old name and
+  metadata. A host enrolled by hand (no `meta.machine`) gets the new
+  metadata only by leaving first and then enrolling with the new ticket.
 
 ## Configuration
 
