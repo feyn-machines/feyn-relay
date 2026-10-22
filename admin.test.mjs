@@ -269,3 +269,20 @@ test('a ceiling for all addresses together: past it sign-in is locked for everyo
   s.tick(LIMITS.lockMs);
   assert.equal((await s.signIn('owner', PASSWORD, '203.0.113.5')).status, 303);
 });
+
+test('a reset link passes once even for two resets at the same moment', async (t) => {
+  const s = await setup(t);
+  const token = /#(.+)$/.exec(resetPassword({ file: s.file, host: HOST, now: () => s.clock.ms }))[1];
+  const both = await Promise.all(['first password!', 'second password!'].map((p) => s.call('POST', '/admin/reset', { form: { token, user: '', password: p, again: p } })));
+  assert.deepEqual(both.map((r) => r.status).sort(), [303, 403]);
+});
+
+test('changing the password on the page drops a reset link not yet used', async (t) => {
+  const s = await setup(t);
+  const token = /#(.+)$/.exec(resetPassword({ file: s.file, host: HOST, now: () => s.clock.ms }))[1];
+  const cookie = await s.session();
+  assert.equal((await s.call('POST', '/admin/password', { form: { current: PASSWORD, password: 'a new password 1', again: 'a new password 1' }, cookie })).status, 303);
+  assert.equal(JSON.parse(readFileSync(s.file, 'utf8')).reset, undefined);
+  assert.equal((await s.call('POST', '/admin/reset', { form: { token, user: '', password: 'a reset password', again: 'a reset password' } })).status, 403);
+  assert.equal((await s.signIn('owner', 'a new password 1')).status, 303);
+});

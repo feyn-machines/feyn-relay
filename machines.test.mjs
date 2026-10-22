@@ -5,7 +5,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash, generateKeyPairSync, sign } from 'node:crypto';
-import { mkdtempSync, readFileSync, rmSync, statSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -310,4 +310,12 @@ test('with byokit itself: a ticket enrols a host marked with its machine, and le
   assert.deepEqual(relay.hosts().map((h) => [h.name, h.meta]), [['omarchy/alice', { machine: m.id, person: 'alice' }]]);
   assert.equal((await post(`/feyn/v1/machines/${m.id}/leave`, m.signed('leave', '', Date.now()))).status, 204);
   assert.deepEqual(relay.hosts(), []);
+});
+
+test('a machines.json that cannot be read stops the start, and names the file', async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), 'feyn-machines-'));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const file = join(dir, 'machines.json');
+  writeFileSync(file, '{"machines":[');
+  assert.throws(() => createMachines({ file, relay: fakeByokit() }), (e) => e.message.includes(file));
 });

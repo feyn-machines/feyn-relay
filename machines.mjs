@@ -68,8 +68,11 @@ function goodKey(key) {
 export function createMachines({ file, relay, now = Date.now, trustProxy = false, log = () => {} }) {
   // {machines: [{id, name, key, details, from, joined, state: 'approved'}],
   //  requests: [{id, name, key, details, from, asked, code, state: 'waiting'|'refused'|'expired'}]}
-  const state = existsSync(file) ? JSON.parse(readFileSync(file, 'utf8')) : { machines: [], requests: [] };
-  if (!Array.isArray(state?.machines) || !Array.isArray(state?.requests)) throw new Error(`${file} does not hold machines`);
+  let state = { machines: [], requests: [] };
+  if (existsSync(file)) {
+    try { state = JSON.parse(readFileSync(file, 'utf8')); } catch (e) { throw new Error(`${file} cannot be read (${e.message}); the relay does not start without it`); }
+  }
+  if (!Array.isArray(state?.machines) || !Array.isArray(state?.requests)) throw new Error(`${file} does not hold machines; the relay does not start without it`);
   // address -> times of its join requests in the last hour; in memory only.
   const asked = new Map();
 

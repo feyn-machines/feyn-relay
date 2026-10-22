@@ -84,7 +84,12 @@ shown `XXXX-XXXX` on the admin page.
 `machines.json` (mode `0600`, written to a temporary file and renamed)
 holds the approved machines and the requests not yet answered for the last
 time. Like byokit's state, it is never restored from an old copy: that
-would bring back a machine that was removed.
+would bring back a machine that was removed. If it is corrupt, the relay
+does not start and its log names the file. To recover, move it aside
+(for example to `machines.json.bad`) and start again. The machines start
+with none approved: their people's hosts stay enrolled with byokit and keep
+working, and each machine runs `sudo feyn relay join DOMAIN` again to be
+approved before it can enrol another person.
 
 ## The admin page
 

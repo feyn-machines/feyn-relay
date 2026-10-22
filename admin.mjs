@@ -45,6 +45,7 @@ const TOKEN = /^[A-Za-z0-9_-]{43}$/;
 const USER = /^[A-Za-z0-9._@-]{1,64}$/;
 
 const sha = (s) => createHash('sha256').update(s).digest('hex');
+const sameHex = (a, b) => typeof a === 'string' && typeof b === 'string' && a.length === b.length && timingSafeEqual(Buffer.from(a), Buffer.from(b));
 const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
 const when = (ms) => new Date(ms).toISOString().replace('T', ' ').slice(0, 16) + ' UTC';
 
@@ -227,10 +228,12 @@ export async function createAdmin({ file, env, machines, relay, now = Date.now, 
     const f = await form(req);
     const a = readAccount(file);
     const token = f?.get('token') ?? '';
-    if (!a.reset || now() > a.reset.expires || !TOKEN.test(token) || sha(token) !== a.reset.hash) return message(res, 403, 'This link is used, expired or wrong. Run reset-password on the relay\'s server again.');
+    if (!a.reset || now() > a.reset.expires || !TOKEN.test(token) || !sameHex(sha(token), a.reset.hash)) return message(res, 403, 'This link is used, expired or wrong. Run reset-password on the relay\'s server again.');
     const user = f.get('user') || a.user;
     if (!USER.test(user) || !goodPassword(f)) return message(res, 400, `The name or the password cannot be used: at least ${LIMITS.password} characters, the same twice.`);
+    // The link is spent before the hash is computed, so a second reset at the same moment finds none.
     const { reset: _, ...rest } = a;
+    writeAccount(file, rest);
     writeAccount(file, await withPassword({ ...rest, user }, f.get('password')));
     sessions.clear();
     lockouts.clear();
@@ -259,7 +262,9 @@ export async function createAdmin({ file, env, machines, relay, now = Date.now, 
         const a = readAccount(file);
         if (!await passwordIs(a, f.get('current') ?? '')) return message(res, 403, 'The current password is wrong.');
         if (!goodPassword(f)) return message(res, 400, `The new password needs at least ${LIMITS.password} characters, the same twice.`);
-        writeAccount(file, await withPassword(a, f.get('password')));
+        // A reset link not yet used is dropped with the old password.
+        const { reset: _, ...rest } = a;
+        writeAccount(file, await withPassword(rest, f.get('password')));
         for (const s of sessions.keys()) if (s !== session) sessions.delete(s);
         log(`admin: password of ${a.user} changed`);
       } else return message(res, 404, 'Not found.');
