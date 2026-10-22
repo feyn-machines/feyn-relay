@@ -5,11 +5,12 @@
 // the OAuth callback keeps a code, in memory, for one fetch or ten minutes;
 // the statement routes serve the owner's signed statement from the state
 // directory (relay distribution design, section 3); the join routes let a
-// machine join and ask for its people's tickets (section 4).
+// machine join and ask for its people's tickets (section 4); the admin page
+// lets the operator answer them (section 5).
 //
 // `relay.attach(server)` answers 404 for every path the relay does not
 // know, so this file routes requests itself: the statement, the join
-// routes, the OAuth callback and blobs first, then the relay.
+// routes, the admin page, the OAuth callback and blobs first, then the relay.
 import { createServer } from 'node:http';
 import { readFileSync, writeFileSync, renameSync, existsSync } from 'node:fs';
 import { dirname, join } from 'node:path';
@@ -18,6 +19,7 @@ import { createBlobs } from './blobs.mjs';
 import { createOauth } from './oauth.mjs';
 import { createStatement } from './statement.mjs';
 import { createMachines } from './machines.mjs';
+import { createAdmin } from './admin.mjs';
 
 const PORT = Number(process.env.RELAY_PORT ?? 7300);
 const HOST = process.env.LISTEN_HOST ?? '127.0.0.1';
@@ -37,6 +39,9 @@ const relay = await Relay.open({
 const log = (line) => console.log(`${new Date().toISOString()} ${line}`);
 // Machines that joined, and their requests, beside the relay's state.
 const machines = createMachines({ file: join(dirname(STATE), 'machines.json'), relay, trustProxy: process.env.TRUST_PROXY === '1', log });
+// The operator's page; the account is made from ADMIN_USER and
+// ADMIN_PASSWORD at first start, and the relay refuses to start without it.
+const admin = await createAdmin({ file: join(dirname(STATE), 'admin.json'), env: process.env, machines, relay, log });
 const blobs = BLOB_DIR
   ? await createBlobs({
       dir: BLOB_DIR,
@@ -63,6 +68,7 @@ server.on('request', (req, res) => {
   void (async () => {
     if (await statement.request(req, res)) return;
     if (await machines.request(req, res)) return;
+    if (await admin.request(req, res)) return;
     if (await oauth.request(req, res)) return;
     if (blobs && await blobs.request(req, res)) return;
     if (await relay.request(req, res)) return;

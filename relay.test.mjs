@@ -17,7 +17,7 @@ async function start(t, env) {
   const port = await freePort();
   const out = [];
   const child = spawn(process.execPath, [join(import.meta.dirname, 'relay.mjs')], {
-    env: { PATH: process.env.PATH, RELAY_PORT: String(port), RELAY_STATE: join(run, 'state', 'relay.json'), RELAY_OWNER_TOKEN: 'owner-token-for-this-test', ...env(run) },
+    env: { PATH: process.env.PATH, RELAY_PORT: String(port), RELAY_STATE: join(run, 'state', 'relay.json'), RELAY_OWNER_TOKEN: 'owner-token-for-this-test', RELAY_HOST: 'relay.example.com', ADMIN_USER: 'owner', ADMIN_PASSWORD: 'a password for this test', ...env(run) },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
   child.stdout.on('data', (d) => out.push(String(d)));
@@ -92,4 +92,31 @@ test('the join routes are served, and machines are kept beside the relay\'s stat
   assert.deepEqual(await (await call('GET', `/feyn/v1/join/${id}`)).json(), { state: 'waiting' });
   assert.ok(existsSync(join(s.run, 'state', 'machines.json')));
   assert.equal((await call('POST', `/feyn/v1/machines/${id}/enrolments`, { name: 'alice', at: Date.now(), sig: 'x' })).status, 403);
+});
+
+test('the admin page is served; its account is made at first start', async (t) => {
+  const s = await start(t, () => ({}));
+  assert.ok(s.out.join('').includes('admin: account owner set up'), s.out.join(''));
+  assert.ok(existsSync(join(s.run, 'state', 'admin.json')));
+  const page = await s.call('GET', '/admin');
+  assert.equal(page.status, 200);
+  assert.match(page.body, /Sign in/);
+});
+
+test('with no admin account and no password, the relay does not start', async () => {
+  const run = mkdtempSync(join(tmpdir(), 'feyn-relay-'));
+  mkdirSync(join(run, 'state'));
+  const child = spawn(process.execPath, [join(import.meta.dirname, 'relay.mjs')], {
+    env: { PATH: process.env.PATH, RELAY_PORT: String(await freePort()), RELAY_STATE: join(run, 'state', 'relay.json'), RELAY_OWNER_TOKEN: 'x', RELAY_HOST: 'relay.example.com', ADMIN_USER: 'owner' },
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  let err = '';
+  child.stderr.on('data', (d) => { err += d; });
+  // A relay that started anyway is stopped, so the test fails rather than hangs.
+  const timer = setTimeout(() => child.kill('SIGKILL'), 5000);
+  const code = await new Promise((r) => child.once('exit', r));
+  clearTimeout(timer);
+  rmSync(run, { recursive: true, force: true });
+  assert.notEqual(code, 0);
+  assert.match(err, /ADMIN_USER and ADMIN_PASSWORD \(at least 12 characters\)/);
 });

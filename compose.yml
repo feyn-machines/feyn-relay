@@ -2,6 +2,9 @@ services:
   relay:
     build: .
     restart: unless-stopped
+    # .env (mode 0600) holds RELAY_OWNER_TOKEN, RELAY_HOST (this relay's
+    # domain) and, until admin.json exists in ./state, ADMIN_USER and
+    # ADMIN_PASSWORD (at least 12 characters) for the admin page's account.
     env_file: .env
     environment:
       RELAY_PORT: "7300"
@@ -12,7 +15,8 @@ services:
     ports:
       - "127.0.0.1:7300:7300"
     volumes:
-      # The relay's state file and the blob endpoint's key pair.
+      # The relay's state file, machines.json, admin.json, the statement
+      # (relay-statement.json and its .sig) and the blob endpoint's key pair.
       - ./state:/state
       # Ciphertext files, each for one fetch or 24 hours; at most 2 GiB.
       - ./blobs:/blobs

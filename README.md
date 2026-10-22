@@ -26,6 +26,7 @@ npm test            # node --test: blobs.test.mjs and relay.test.mjs, loopback o
 | `relay.mjs` | The mount file. `relay.attach(server)` answers 404 for every path the relay does not know, so this file routes requests itself: the blob routes first, then `relay.request`, then 404; upgrades go to `relay.upgrade`. |
 | `statement.mjs` | The statement routes: `relay-statement.json` and its `.sig` from the state directory, byte for byte, read on every request. |
 | `machines.mjs` | The join routes: a machine's request and its code, the operator's answer, a person's ticket asked for with the machine's key, a machine leaving; `machines.json` beside the relay's state. |
+| `admin.mjs` | The admin page at `/admin`, and `node admin.mjs reset-password`. |
 | `blobs.mjs` | The blob endpoint: its key pair, the token check, streaming to and from disk, the limits, the sweep, CORS. No dependency beyond Node. |
 | `blobs.test.mjs` | The endpoint on a loopback server with a fake clock and a fake host list. |
 | `relay.test.mjs` | `relay.mjs` as a child process: both sets of routes and the upgrade on one port. |
@@ -82,6 +83,34 @@ shown `XXXX-XXXX` on the admin page.
 holds the approved machines and the requests not yet answered for the last
 time. Like byokit's state, it is never restored from an old copy: that
 would bring back a machine that was removed.
+
+## The admin page
+
+`https://<RELAY_HOST>/admin`, server-rendered, one account. It shows
+**Requests** (name, code as `XXXX-XXXX`, details, address, time; Approve,
+Refuse), **Machines** (name, people as byokit hosts with online state and
+device count, joined; Remove, which revokes every host of the machine),
+**Other hosts** (byokit hosts that are no machine's, such as those enrolled
+by hand with the owner token; Remove) and **Account** (change the password,
+sign out).
+
+- At first start, with no `admin.json` in the state directory, the account
+  is made from `ADMIN_USER` and `ADMIN_PASSWORD` (at least 12 characters)
+  and the relay logs `admin: account <name> set up`. Without them it does
+  not start. Once `admin.json` exists the two are not read again: a later
+  change of `.env` does not replace a password changed on the page, and the
+  password may be removed from `.env`.
+- The password is kept as scrypt with its salt in `admin.json` (`0600`).
+  A session is a random cookie (`HttpOnly; Secure; SameSite=Strict;
+  Path=/admin`, 12 hours) kept in memory; a restart signs the operator out.
+  Ten wrong sign-ins within 15 minutes lock sign-in for 15 minutes.
+- Every `POST` must carry `Origin: https://<RELAY_HOST>`, and every one but
+  sign-in and reset the session cookie; otherwise `403`.
+- A forgotten password: on the relay's server,
+  `docker compose exec relay node admin.mjs reset-password` prints
+  `https://<RELAY_HOST>/admin/reset#<token>`, good once within 15 minutes,
+  where a new password (and, if wanted, a new name) is set. Only a hash of
+  the token is kept. A reset signs every session out.
 
 ## The blob routes
 
@@ -168,7 +197,9 @@ spec `2026-10-22-relay-distribution-design.md`, section 4.6):
 | Variable | Meaning | Default |
 | --- | --- | --- |
 | `RELAY_STATE` | the relay's state file | required |
-| `RELAY_OWNER_TOKEN` | the bearer token of the owner routes (in `.env`) | required |
+| `RELAY_OWNER_TOKEN` | the bearer token of the owner routes (in `.env`); used by nobody since machines join by themselves | required |
+| `RELAY_HOST` | this relay's domain, for the admin page's `Origin` check and reset link | required |
+| `ADMIN_USER`, `ADMIN_PASSWORD` | the admin account, read only while there is no `admin.json` | required at first start |
 | `RELAY_PORT`, `LISTEN_HOST` | where to listen | `7300`, `127.0.0.1` |
 | `TRUST_PROXY` | `1` to take the client address from `X-Forwarded-For` | off |
 | `BLOB_DIR` | where blobs are kept; unset, there are no blob routes and the relay runs as before | unset |
