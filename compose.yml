@@ -1,5 +1,8 @@
 services:
   relay:
+    # The public image, pulled with no token; `docker compose build` makes
+    # it from this directory instead, for local use.
+    image: ghcr.io/feyn-machines/feyn-relay:latest
     build: .
     restart: unless-stopped
     # .env (mode 0600) holds RELAY_OWNER_TOKEN, RELAY_HOST (this relay's

@@ -1,0 +1,13 @@
+#!/bin/sh
+# check-version TAG: succeeds, printing the version, only when TAG is
+# "v" followed by package.json's version. The image workflow runs it before
+# building, so a tag never publishes an image of another version.
+set -eu
+here=$(dirname "$0")
+version=$(node -p 'JSON.parse(require("fs").readFileSync(process.argv[1], "utf8")).version' "$here/../package.json")
+tag=${1-}
+if [ "$tag" != "v$version" ]; then
+  echo "check-version: tag '$tag' does not match package.json version $version (expected v$version)" >&2
+  exit 1
+fi
+echo "$version"
