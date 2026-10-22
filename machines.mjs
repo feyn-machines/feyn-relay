@@ -21,6 +21,7 @@
 // restored: it would bring back a machine that was removed.
 import { createHash, createPublicKey, randomInt, verify } from 'node:crypto';
 import { existsSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
+import { clientAddress } from './address.mjs';
 
 export const LIMITS = {
   body: 4096, // a request's body, in bytes
@@ -102,10 +103,7 @@ export function createMachines({ file, relay, now = Date.now, trustProxy = false
     }
   }
 
-  function addressOf(req) {
-    const forwarded = trustProxy ? String(req.headers['x-forwarded-for'] ?? '').split(',')[0].trim() : '';
-    return forwarded || req.socket.remoteAddress || '';
-  }
+  const addressOf = (req) => clientAddress(req, trustProxy);
 
   // One more join request from this address; false past the hour's limit.
   function allow(address) {

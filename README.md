@@ -27,6 +27,7 @@ npm test            # node --test: every *.test.mjs, loopback only
 | `relay.mjs` | The mount file. `relay.attach(server)` answers 404 for every path the relay does not know, so this file routes requests itself: the blob routes first, then `relay.request`, then 404; upgrades go to `relay.upgrade`. |
 | `statement.mjs` | The statement routes: `relay-statement.json` and its `.sig` from the state directory, byte for byte, read on every request. |
 | `machines.mjs` | The join routes: a machine's request and its code, the operator's answer, a person's ticket asked for with the machine's key, a machine leaving; `machines.json` beside the relay's state. |
+| `address.mjs` | The client's address behind the proxy, for the join routes' and the admin page's limits. |
 | `admin.mjs` | The admin page at `/admin`, and `node admin.mjs reset-password`. |
 | `blobs.mjs` | The blob endpoint: its key pair, the token check, streaming to and from disk, the limits, the sweep, CORS. No dependency beyond Node. |
 | `probe/reenrol.test.mjs` | byokit across a host's `leave()` and a new enrolment with the same key (see "Re-enrolment"). |
@@ -202,7 +203,7 @@ spec `2026-10-22-relay-distribution-design.md`, section 4.6):
 | `RELAY_HOST` | this relay's domain, for the admin page's `Origin` check and reset link | required |
 | `ADMIN_USER`, `ADMIN_PASSWORD` | the admin account, read only while there is no `admin.json` | required at first start |
 | `RELAY_PORT`, `LISTEN_HOST` | where to listen | `7300`, `127.0.0.1` |
-| `TRUST_PROXY` | `1` to take the client address from `X-Forwarded-For` | off |
+| `TRUST_PROXY` | `1` to take the client address from the proxy: `cf-connecting-ip`, else the last `X-Forwarded-For` value (the first is the client's own word) | off |
 | `BLOB_DIR` | where blobs are kept; unset, there are no blob routes and the relay runs as before | unset |
 | `BLOB_KEY` | the endpoint's key file | `blob-key.json` beside `RELAY_STATE` |
 

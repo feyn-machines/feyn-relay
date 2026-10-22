@@ -51,7 +51,8 @@ async function setup(t, o = {}) {
   const call = async (method, path, body, { from = '203.0.113.7', raw } = {}) => {
     const r = await fetch(base + path, {
       method,
-      headers: { 'content-type': 'application/json', 'x-forwarded-for': `${from}, 10.0.0.1` },
+      // A forged first value, then the address the proxy saw.
+      headers: { 'content-type': 'application/json', 'x-forwarded-for': `6.6.6.6, ${from}` },
       ...(body !== undefined || raw !== undefined ? { body: raw ?? JSON.stringify(body) } : {}),
     });
     const text = await r.text();
@@ -60,7 +61,7 @@ async function setup(t, o = {}) {
   const join_ = (m, opts) => call('POST', '/feyn/v1/join', m.body, opts);
   const state = (id) => call('GET', `/feyn/v1/join/${id}`);
   const enrol = (m, person, at = clock.ms, signer = m) => call('POST', `/feyn/v1/machines/${m.id}/enrolments`, { name: person, ...signer.signed('enrol', person, at) });
-  return { dir, file, clock, byokit, machines, make, call, join: join_, state, enrol, tick: (ms) => { clock.ms += ms; } };
+  return { dir, file, base, clock, byokit, machines, make, call, join: join_, state, enrol, tick: (ms) => { clock.ms += ms; } };
 }
 
 test('a new request: an id, a code of eight characters, an hour', async (t) => {
@@ -185,6 +186,15 @@ test('429: more than ten requests from one address in an hour', async (t) => {
   assert.equal((await s.join(makeMachine(), { from: '192.0.2.2' })).status, 201);
   s.tick(3600_000);
   assert.equal((await s.join(makeMachine(), { from: '192.0.2.1' })).status, 201);
+});
+
+test('a forged first X-Forwarded-For value does not escape the limit; cf-connecting-ip is taken first', async (t) => {
+  const s = await setup(t);
+  const post = (headers) => fetch(`${s.base}/feyn/v1/join`, { method: 'POST', headers, body: JSON.stringify(makeMachine().body) });
+  for (let i = 0; i < LIMITS.perAddress; i++) assert.equal((await post({ 'x-forwarded-for': `10.9.0.${i}, 192.0.2.50` })).status, 201);
+  assert.equal((await post({ 'x-forwarded-for': '10.9.1.1, 192.0.2.50' })).status, 429);
+  assert.equal((await post({ 'cf-connecting-ip': '192.0.2.51', 'x-forwarded-for': '192.0.2.50' })).status, 201);
+  assert.ok(s.machines.requests().some((r) => r.from === '192.0.2.51'));
 });
 
 test('the address is the socket\'s unless TRUST_PROXY: a forwarded address is ignored', async (t) => {
