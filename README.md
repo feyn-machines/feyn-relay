@@ -8,8 +8,8 @@ distribution design (feyn-os, `docs/superpowers/specs/2026-10-22-relay-distribut
 keeps no messages. The blob endpoint keeps ciphertext files, each for one
 fetch or 24 hours. Nothing here holds a key that opens anything.
 
-Status: 0.3.0 written and tested on loopback on 2026-10-22; no image
-pushed yet. **Not deployed.** What runs on the relay server today is the
+Status: 0.3.1 written and tested on loopback on 2026-10-22; 0.3.0 was the first image
+pushed. **Not deployed.** What runs on the relay server today is the
 mount file without the blob routes; that copy stays in the probe's record
 (feyn-os, `docs/research/2026-10-11-byokit-probe/relay-deploy/`) as what was
 deployed on 2026-10-11. Whether the Cloudflare tunnel in front of the relay
