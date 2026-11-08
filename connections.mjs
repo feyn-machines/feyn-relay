@@ -18,21 +18,25 @@ export function watchConnections(relay, { log, now = Date.now } = {}) {
   if (wss && typeof wss.handleUpgrade === 'function') {
     const handle = wss.handleUpgrade.bind(wss);
     wss.handleUpgrade = (req, socket, head, cb) => handle(req, socket, head, (ws) => {
-      const c = bySocket.get(socket);
-      if (c && c.side === 'host') {
-        // A host's id is known once byokit has registered its hello; look for
-        // it on its messages and, registered before byokit's own listener, at
-        // its close, while it is still in `live`.
-        const find = () => { if (!c.host) for (const [id, l] of relay.live ?? []) if (l.ws === ws) c.host = id; };
-        ws.on('message', find);
-        ws.on('close', find);
-      }
-      // ws emits close after the socket's own; the line is written then.
-      if (c) { c.ws = true; ws.on('close', (code, reason) => { c.code = code; c.why = clean(reason); c.end(); }); }
+      // Nothing here may stop the connection: a failure only loses the code.
+      try { listen(ws, bySocket.get(socket)); } catch {}
       cb(ws);
     });
   }
-  return (req, socket) => {
+  function listen(ws, c) {
+    if (c && c.side === 'host') {
+      // A host's id is known once byokit has registered its hello; look for
+      // it on its messages and, registered before byokit's own listener, at
+      // its close, while it is still in `live`.
+      const find = () => { if (!c.host) try { for (const [id, l] of relay.live ?? []) if (l.ws === ws) c.host = id; } catch {} };
+      ws.on('message', find);
+      ws.on('close', find);
+    }
+    // ws emits close after the socket's own; the line is written then.
+    if (c) { c.ws = true; ws.on('close', (code, reason) => { try { c.code = code; c.why = clean(reason); c.end(); } catch {} }); }
+  }
+  return (req, socket) => { try { watch(req, socket); } catch {} };
+  function watch(req, socket) {
     const path = new URL(req.url ?? '/', 'http://relay').pathname;
     const device = /^\/link\/v1\/([A-Za-z0-9_-]{22})$/.exec(path);
     if (!device && path !== '/relay/v1/host') return;
@@ -53,6 +57,6 @@ export function watchConnections(relay, { log, now = Date.now } = {}) {
       log(`ws side=${c.side} host=${short(c.host)} colo=${c.colo} country=${c.country} ms=${now() - c.at} code=${c.code ?? '?'}${why} in=${socket.bytesRead} out=${socket.bytesWritten}`);
     };
     // A socket byokit never made a WebSocket of is written when it closes.
-    socket.once('close', () => { if (!c.ws) c.end(); });
-  };
+    socket.once('close', () => { try { if (!c.ws) c.end(); } catch {} });
+  }
 }
