@@ -115,3 +115,20 @@ test('with no admin account and no password, the relay does not start', async ()
   assert.notEqual(code, 0);
   assert.match(err, /ADMIN_USER and ADMIN_PASSWORD \(at least 12 characters\)/);
 });
+
+test('every relay WebSocket is logged when it closes, with its close code', async (t) => {
+  const s = await start(t, () => ({}));
+  const closed = (ws) => new Promise((r) => ws.addEventListener('close', (e) => r(e.code)));
+  // A device whose host is not online: byokit closes it with 1013.
+  const device = new WebSocket(`ws://127.0.0.1:${s.port}/link/v1/${'A'.repeat(22)}`);
+  assert.equal(await closed(device), 1013);
+  // A host that goes away before its hello.
+  const host = new WebSocket(`ws://127.0.0.1:${s.port}/relay/v1/host`);
+  await new Promise((r) => host.addEventListener('open', r));
+  host.close(1000);
+  await closed(host);
+  for (let i = 0; i < 100 && (s.out.join('').match(/^\S+ ws /gm) ?? []).length < 2; i++) await new Promise((r) => setTimeout(r, 20));
+  const out = s.out.join('');
+  assert.match(out, /^\S+ ws side=device host=AAAAAA colo=- country=- ms=\d+ code=1013 in=\d+ out=\d+$/m);
+  assert.match(out, /^\S+ ws side=host host=- colo=- country=- ms=\d+ code=1000 in=\d+ out=\d+$/m);
+});

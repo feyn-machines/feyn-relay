@@ -18,6 +18,7 @@ import { createBlobs } from './blobs.mjs';
 import { createOauth } from './oauth.mjs';
 import { createMachines } from './machines.mjs';
 import { createAdmin } from './admin.mjs';
+import { watchConnections } from './connections.mjs';
 
 const PORT = Number(process.env.RELAY_PORT ?? 7300);
 const HOST = process.env.LISTEN_HOST ?? '127.0.0.1';
@@ -53,11 +54,14 @@ const blobs = BLOB_DIR
 // Where a service's OAuth sign-in comes back to: a code kept for one fetch.
 const oauth = createOauth();
 
+// One line for every WebSocket when it closes (connections.mjs).
+const connection = watchConnections(relay, { log });
+
 const server = createServer();
 // Node gives a request five minutes to arrive whole; 51 MiB from a phone can
 // take longer.
 server.requestTimeout = 30 * 60_000;
-server.on('upgrade', (req, socket, head) => { if (!relay.upgrade(req, socket, head)) socket.destroy(); });
+server.on('upgrade', (req, socket, head) => { connection(req, socket); if (!relay.upgrade(req, socket, head)) socket.destroy(); });
 server.on('request', (req, res) => {
   void (async () => {
     if (await machines.request(req, res)) return;

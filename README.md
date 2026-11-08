@@ -28,12 +28,33 @@ npm test            # node --test: every *.test.mjs, loopback only
 | `machines.mjs` | The join routes: a machine's request and its code, the operator's answer, a person's ticket asked for with the machine's key, a machine leaving; `machines.json` beside the relay's state. |
 | `address.mjs` | The client's address behind the proxy, for the join routes' and the admin page's limits. |
 | `admin.mjs` | The admin page at `/admin`, and `node admin.mjs reset-password`. |
+| `connections.mjs` | One log line for every relay WebSocket when it closes (see "Connection log"). |
 | `blobs.mjs` | The blob endpoint: its key pair, the token check, streaming to and from disk, the limits, the sweep, CORS. No dependency beyond Node. |
 | `probe/reenrol.test.mjs` | byokit across a host's `leave()` and a new enrolment with the same key (see "Re-enrolment"). |
 | `*.test.mjs` | Each module on loopback with a fake clock; `relay.test.mjs` runs `relay.mjs` as a child process. |
 | `Dockerfile`, `compose.yml` | `node:24-slim`, `npm ci --ignore-scripts`; read-only root, all capabilities dropped, 256 MB, bound to `127.0.0.1:7300`; volumes `./state` and `./blobs`. `compose.yml` pulls `ghcr.io/feyn-machines/feyn-relay:latest`, or builds this directory with `docker compose build`. |
 | `.github/workflows/image.yml`, `scripts/check-version` | The image, built by a tag (see "The image"). |
 | `package-lock.json` | `@byokit/relay` 0.6.0 and everything under it, at the versions of the lockfile deployed on 2026-10-11. |
+
+## Connection log
+
+Since 0.3.3 every WebSocket the relay takes is written to its log when it
+closes (feyn-os issue #454: telling a phone's dropped link from one put
+away):
+
+```
+2026-11-08T10:10:09.381Z ws side=device host=AbCdEf colo=HKG country=CN ms=184233 code=1006 in=41520 out=90211
+```
+
+`side` is `device` (a phone or browser on `/link/v1/<host>`) or `host` (a
+connector on `/relay/v1/host`); `host` is the host id cut to six
+characters (`-` for a host that closed before its hello was registered);
+`colo` and `country` are Cloudflare's, from `cf-ray` and `cf-ipcountry`
+(`-` without Cloudflare); `ms` is how long it lived; `code` and an optional
+`why` are what the WebSocket received in the peer's close frame (1006 when
+none came, `?` if byokit's socket could not be read); `in` and `out` are
+the bytes on the socket. No address and no payload is written. Read it with
+`docker compose logs relay | grep ' ws '`.
 
 ## Machines
 
