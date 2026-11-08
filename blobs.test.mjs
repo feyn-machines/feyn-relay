@@ -1,5 +1,6 @@
 // The blob endpoint of the client design, section 6.3, on loopback: who may
-// upload, the size a token names, one fetch, the three limits, the sweep.
+// upload, the size a token names, repeatable ranges, acknowledgement,
+// the three limits, the sweep.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createHmac, createPrivateKey, createPublicKey, diffieHellman, generateKeyPairSync, randomBytes } from 'node:crypto';
@@ -57,13 +58,12 @@ async function setup(t, o = {}) {
   // The headers a host's connector hands to a device for one upload.
   const grant = (host, addr, size, expires = seconds() + 600) => ({ 'x-feyn-host': host.id, 'x-feyn-expires': String(expires), 'x-feyn-token': token(host, key, addr, size, expires) });
   const put = (host, addr, body, over = {}) => call('PUT', `/feyn/v1/blobs/${addr}`, { body, headers: { ...grant(host, addr, body.length), ...over } });
-  // A fetch. The endpoint removes a blob once the whole answer has left it,
-  // which is a moment after the last byte arrives here: a whole fetch waits
-  // for the endpoint's own line saying so.
+  // Wait for the endpoint to notice a completed or interrupted send, so tests
+  // can inspect its log and state without racing the pipeline callback.
   const get = async (addr, o) => {
     const before = lines.filter((l) => l.startsWith('blob get')).length;
     const r = await call('GET', `/feyn/v1/blobs/${addr}`, o);
-    if (r.status === 200 || r.cut) for (let i = 0; i < 500 && lines.filter((l) => l.startsWith('blob get')).length === before; i++) await new Promise((res) => setTimeout(res, 10));
+    if (r.status === 200 || r.status === 206 || r.cut) for (let i = 0; i < 500 && lines.filter((l) => l.startsWith('blob get')).length === before; i++) await new Promise((res) => setTimeout(res, 10));
     return r;
   };
   return { run, port, clock, hosts, enrolled, blobs, call, key, seconds, address, grant, put, get, lines, dir: join(run, 'blobs') };
@@ -80,7 +80,7 @@ test('the key is made once, kept privately in the state directory, and served', 
   again.close();
 });
 
-test('a token made with an enrolled host\'s key admits one upload of one size, fetched once', async (t) => {
+test('a token made with an enrolled host\'s key admits one upload of one size, retained until acknowledgement', async (t) => {
   const s = await setup(t);
   const [a] = s.hosts;
   const addr = s.address(), body = randomBytes(3 * MiB + 17);
@@ -96,7 +96,11 @@ test('a token made with an enrolled host\'s key admits one upload of one size, f
   assert.equal(g.headers['content-length'], String(body.length));
   assert.equal(g.headers['access-control-allow-origin'], '*');
   assert.ok(g.body.equals(body));
-  // Deleted when the response has been sent whole.
+  // Sending is not receipt: a repeat GET still returns the same ciphertext.
+  assert.ok((await s.get(addr)).body.equals(body));
+  assert.equal(s.blobs.usage().total, body.length);
+  assert.equal((await s.call('DELETE', `/feyn/v1/blobs/${addr}`)).status, 204);
+  assert.equal((await s.call('DELETE', `/feyn/v1/blobs/${addr}`)).status, 204);
   assert.equal((await s.get(addr)).status, 404);
   assert.deepEqual(readdirSync(s.dir), []);
   assert.deepEqual(s.blobs.usage(), { total: 0, hosts: {}, count: 0 });
@@ -180,7 +184,7 @@ test('a second PUT of an address is answered 200 and changes nothing', async (t)
   assert.ok((await s.get(addr)).body.equals(first));
 });
 
-test('a fetch cut halfway keeps the blob; a whole one removes it', async (t) => {
+test('a cut and a whole fetch both retain the blob', async (t) => {
   const s = await setup(t);
   const addr = s.address(), body = Buffer.alloc(40 * MiB, 9);
   assert.equal((await s.put(s.hosts[0], addr, body)).status, 201);
@@ -192,30 +196,124 @@ test('a fetch cut halfway keeps the blob; a whole one removes it', async (t) => 
   const whole = await s.get(addr);
   assert.equal(whole.status, 200);
   assert.equal(whole.body.length, body.length);
-  assert.equal((await s.get(addr)).status, 404);
+  assert.equal((await s.get(addr)).status, 200);
 });
 
-test('while one fetch is under way a second is told to come back', async (t) => {
+test('a paused whole fetch allows concurrent bounded and open-ended ranges', async (t) => {
   const s = await setup(t);
   const addr = s.address(), body = Buffer.alloc(40 * MiB, 3);
   assert.equal((await s.put(s.hosts[0], addr, body)).status, 201);
-  // The second request is made when the first answer's headers are here.
-  let second;
   const done = await new Promise((resolve, reject) => {
     request({ host: '127.0.0.1', port: s.port, path: `/feyn/v1/blobs/${addr}` }, (res) => {
-      second = s.call('GET', `/feyn/v1/blobs/${addr}`);
-      let n = 0;
-      res.on('data', (d) => { n += d.length; });
-      res.on('end', () => resolve({ status: res.statusCode, length: n }));
+      res.pause();
+      void (async () => {
+        const [bounded, tail] = await Promise.all([
+          s.get(addr, { headers: { range: 'bytes=7-15' } }),
+          s.get(addr, { headers: { range: 'bytes=41943031-' } }),
+        ]);
+        assert.equal(bounded.status, 206);
+        assert.deepEqual(bounded.body, Buffer.alloc(9, 3));
+        assert.equal(tail.status, 206);
+        assert.deepEqual(tail.body, Buffer.alloc(9, 3));
+        let n = 0;
+        res.on('data', (d) => { n += d.length; });
+        res.on('end', () => resolve({ status: res.statusCode, length: n }));
+        res.on('error', reject);
+        res.resume();
+      })().catch((err) => { res.destroy(); reject(err); });
     }).on('error', reject).end();
   });
   assert.deepEqual(done, { status: 200, length: body.length });
-  const r = await second;
-  assert.equal(r.status, 503);
-  assert.equal(r.headers['retry-after'], '2');
+  assert.equal(s.blobs.usage().count, 1);
 });
 
-test('one host\'s unfetched blobs are capped (413) and so are all blobs (507)', async (t) => {
+test('single byte ranges return exact boundaries and remain repeatable after a whole send', async (t) => {
+  const s = await setup(t);
+  const addr = s.address(), body = Buffer.from('0123456789');
+  assert.equal((await s.put(s.hosts[0], addr, body)).status, 201);
+  assert.equal((await s.get(addr)).status, 200);
+  for (const [range, want, contentRange] of [
+    ['bytes=2-5', '2345', 'bytes 2-5/10'],
+    ['bytes=7-', '789', 'bytes 7-9/10'],
+    ['bytes=9-9', '9', 'bytes 9-9/10'],
+    ['bytes=8-99', '89', 'bytes 8-9/10'],
+    ['bytes=0-9', '0123456789', 'bytes 0-9/10'],
+    ['bytes=-3', '789', 'bytes 7-9/10'],
+    ['bytes=-99', '0123456789', 'bytes 0-9/10'],
+    ['bytes=2-5', '2345', 'bytes 2-5/10'],
+  ]) {
+    const r = await s.get(addr, { headers: { range } });
+    assert.equal(r.status, 206, range);
+    assert.equal(r.body.toString(), want, range);
+    assert.equal(r.headers['content-range'], contentRange, range);
+    assert.equal(r.headers['content-length'], String(want.length), range);
+    assert.equal(r.headers['accept-ranges'], 'bytes');
+    assert.equal(r.headers['cache-control'], 'no-store');
+  }
+  assert.deepEqual(s.blobs.usage(), { total: 10, hosts: { [s.hosts[0].id]: 10 }, count: 1 });
+});
+
+test('invalid and unsatisfiable ranges return 416 without consuming a blob', async (t) => {
+  const s = await setup(t);
+  const addr = s.address();
+  assert.equal((await s.put(s.hosts[0], addr, Buffer.from('0123456789'))).status, 201);
+  for (const range of ['bytes=10-', 'bytes=6-2', 'bytes=-0', 'bytes=-', 'bytes=0-1,3-4', 'items=0-1', 'bytes=a-3', 'bytes=0-1junk']) {
+    const r = await s.get(addr, { headers: { range } });
+    assert.equal(r.status, 416, range);
+    assert.equal(r.headers['content-range'], 'bytes */10', range);
+  }
+  assert.equal((await s.get(addr)).body.toString(), '0123456789');
+  const empty = s.address();
+  assert.equal((await s.put(s.hosts[0], empty, Buffer.alloc(0))).status, 201);
+  const r = await s.get(empty, { headers: { range: 'bytes=0-' } });
+  assert.equal(r.status, 416);
+  assert.equal(r.headers['content-range'], 'bytes */0');
+  assert.equal((await s.get(empty)).status, 200);
+});
+
+test('receipt DELETE is idempotent for absent blobs and validates the address', async (t) => {
+  const s = await setup(t);
+  const r = await s.call('DELETE', `/feyn/v1/blobs/${s.address()}`);
+  assert.equal(r.status, 204);
+  assert.equal(r.body.length, 0);
+  assert.equal((await s.call('DELETE', '/feyn/v1/blobs/invalid')).status, 404);
+});
+
+test('a receipt cannot acknowledge an upload still in progress', async (t) => {
+  const s = await setup(t);
+  const addr = s.address(), body = Buffer.alloc(5000, 7);
+  let upload;
+  const stored = new Promise((resolve, reject) => {
+    upload = request({ host: '127.0.0.1', port: s.port, method: 'PUT', path: `/feyn/v1/blobs/${addr}`, headers: { 'content-length': '5000', ...s.grant(s.hosts[0], addr, 5000) } }, (res) => {
+      res.resume();
+      res.on('end', () => resolve(res.statusCode));
+    }).on('error', reject);
+  });
+  t.after(() => upload.destroy());
+  upload.write(body.subarray(0, 1000));
+  for (let i = 0; i < 100 && !s.blobs.usage().count; i++) await new Promise((r) => setTimeout(r, 10));
+  assert.equal(s.blobs.usage().count, 1);
+  const receipt = await s.call('DELETE', `/feyn/v1/blobs/${addr}`);
+  upload.end(body.subarray(1000));
+  assert.equal(await stored, 201);
+  assert.equal(receipt.status, 409);
+  assert.deepEqual((await s.get(addr)).body, body);
+  assert.equal((await s.call('DELETE', `/feyn/v1/blobs/${addr}`)).status, 204);
+});
+
+test('a read does not extend the 24-hour expiry and an expired blob cannot be read before sweep', async (t) => {
+  const s = await setup(t);
+  const addr = s.address();
+  assert.equal((await s.put(s.hosts[0], addr, Buffer.from('0123456789'))).status, 201);
+  s.clock.ms += 24 * 3600_000 - 1;
+  assert.equal((await s.get(addr, { headers: { range: 'bytes=5-' } })).status, 206);
+  s.clock.ms += 1;
+  assert.equal((await s.get(addr)).status, 404);
+  assert.equal(s.blobs.usage().count, 0);
+  assert.equal((await s.call('DELETE', `/feyn/v1/blobs/${addr}`)).status, 204);
+});
+
+test('one host\'s retained blobs are capped (413) and so are all blobs (507)', async (t) => {
   const s = await setup(t, { limits: { ...LIMITS, host: 5000, total: 7000 } });
   const [a, b] = s.hosts;
   const first = s.address();
@@ -226,8 +324,10 @@ test('one host\'s unfetched blobs are capped (413) and so are all blobs (507)', 
   assert.equal((await s.get(over)).status, 404);
   assert.equal((await s.put(b, s.address(), Buffer.alloc(2000))).status, 201);
   assert.equal((await s.put(b, s.address(), Buffer.alloc(1))).status, 507);
-  // A fetch frees the room.
+  // A fetch retains its quota; only receipt frees the room.
   assert.equal((await s.get(first)).status, 200);
+  assert.equal((await s.put(a, s.address(), Buffer.alloc(1))).status, 413);
+  assert.equal((await s.call('DELETE', `/feyn/v1/blobs/${first}`)).status, 204);
   assert.equal((await s.put(a, s.address(), Buffer.alloc(3000))).status, 201);
   assert.equal(s.blobs.usage().total, 7000);
   assert.equal(LIMITS.host, 500 * MiB);
@@ -285,7 +385,9 @@ test('OPTIONS answers a browser\'s preflight; other paths are not ours', async (
     const r = await s.call('OPTIONS', path, { headers: { origin: 'https://app.example', 'access-control-request-method': 'PUT', 'access-control-request-headers': 'x-feyn-host,x-feyn-expires,x-feyn-token' } });
     assert.equal(r.status, 204);
     assert.equal(r.headers['access-control-allow-origin'], '*');
-    assert.match(r.headers['access-control-allow-methods'], /PUT/);
+    for (const method of ['GET', 'PUT', 'DELETE', 'OPTIONS']) assert.ok(r.headers['access-control-allow-methods'].split(/,\s*/).includes(method), method);
+    assert.ok(r.headers['access-control-allow-headers'].split(/,\s*/).includes('range'));
+    for (const h of ['content-range', 'content-length', 'accept-ranges']) assert.ok(r.headers['access-control-expose-headers'].split(/,\s*/).includes(h), h);
     for (const h of ['x-feyn-host', 'x-feyn-expires', 'x-feyn-token']) assert.ok(r.headers['access-control-allow-headers'].includes(h), h);
   }
   assert.equal((await s.call('GET', '/relay/v1/hosts')).body.toString(), 'not ours');

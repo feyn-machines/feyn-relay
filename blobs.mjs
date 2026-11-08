@@ -1,11 +1,12 @@
 // The blob endpoint of the Feyn client design, section 6.3: ciphertext files
-// kept for one fetch or 24 hours, in the relay's own process. It parses
-// nothing but headers and streams bodies to and from disk.
+// kept until receiver acknowledgement or 24 hours, in the relay's own
+// process. It parses only headers and streams bodies to and from disk.
 //
 //   GET     /feyn/v1/blobs/key        the endpoint's X25519 public key
 //   PUT     /feyn/v1/blobs/<address>  store, with a token from an enrolled host
-//   GET     /feyn/v1/blobs/<address>  fetch once; deleted when sent whole
-//   OPTIONS on both                   CORS for a browser
+//   GET     /feyn/v1/blobs/<address>  fetch whole or a single byte range
+//   DELETE  /feyn/v1/blobs/<address>  receiver acknowledgement (idempotent)
+//   OPTIONS on these                  CORS for a browser
 //
 // A file on disk is `<address>.<host id>`: the address is 32 random bytes in
 // base64url, made by the host's connector, and is the only thing a fetch
@@ -18,9 +19,9 @@ import { pipeline } from 'node:stream';
 const MiB = 1024 * 1024;
 export const LIMITS = {
   blob: 51 * MiB, // one blob: 50 MiB of file plus tags
-  host: 500 * MiB, // one host's unfetched blobs; beyond it 413
+  host: 500 * MiB, // one host's retained blobs; beyond it 413
   total: 2048 * MiB, // all blobs; beyond it 507
-  keepMs: 24 * 3600_000, // kept until fetched once, or this long
+  keepMs: 24 * 3600_000, // kept until acknowledged, or this long
   sweepMs: 600_000, // a sweep this often, and at start
   aheadS: 900, // a token's expiry is at most this far ahead
 };
@@ -30,12 +31,34 @@ const HOST = /^[A-Za-z0-9_-]{1,64}$/;
 const FILE = /^([A-Za-z0-9_-]{43})\.([A-Za-z0-9_-]{1,64})$/;
 const CORS = {
   'access-control-allow-origin': '*',
-  'access-control-allow-methods': 'GET, PUT, OPTIONS',
-  'access-control-allow-headers': 'content-type, x-feyn-host, x-feyn-expires, x-feyn-token',
+  'access-control-allow-methods': 'GET, PUT, DELETE, OPTIONS',
+  'access-control-allow-headers': 'content-type, range, x-feyn-host, x-feyn-expires, x-feyn-token',
+  'access-control-expose-headers': 'content-range, content-length, accept-ranges',
   'access-control-max-age': '600',
 };
 
 const publicKeyOf = (x) => createPublicKey({ key: { kty: 'OKP', crv: 'X25519', x }, format: 'jwk' });
+
+// Only one bytes range is served. BigInt keeps oversized endpoints exact:
+// an end beyond EOF is clamped; a start beyond EOF is unsatisfiable.
+function byteRange(value, size) {
+  const m = /^bytes=(\d*)-(\d*)$/.exec(value);
+  if (!m || (!m[1] && !m[2]) || size === 0) return;
+  const total = BigInt(size);
+  let start, end;
+  if (!m[1]) {
+    const suffix = BigInt(m[2]);
+    if (suffix === 0n) return;
+    start = suffix >= total ? 0n : total - suffix;
+    end = total - 1n;
+  } else {
+    start = BigInt(m[1]);
+    end = m[2] ? BigInt(m[2]) : total - 1n;
+    if (start >= total || end < start) return;
+    if (end >= total) end = total - 1n;
+  }
+  return { start: Number(start), end: Number(end) };
+}
 
 // The token of section 6.3:
 //   HMAC-SHA256( X25519(host secret key, endpoint public key),
@@ -69,7 +92,7 @@ export async function createBlobs({ dir, keyFile, hosts, now = Date.now, limits 
   const key = loadKey(keyFile);
   mkdirSync(dir, { recursive: true });
   // address -> {host, size, at, state}: `writing` while an upload is under
-  // way, `fetching` while a fetch is, else `kept`.
+  // way, otherwise `kept`. Readers never own or consume an entry.
   const index = new Map();
   for (const name of readdirSync(dir)) {
     const m = FILE.exec(name);
@@ -102,7 +125,7 @@ export async function createBlobs({ dir, keyFile, hosts, now = Date.now, limits 
   function sweep() {
     let n = 0;
     for (const [address, b] of index) {
-      if (b.state === 'kept' && now() - b.at > limits.keepMs) { drop(address); n++; }
+      if (b.state === 'kept' && now() - b.at >= limits.keepMs) { drop(address); n++; }
     }
     if (n) log(`blob sweep removed=${n}`);
     return n;
@@ -178,23 +201,41 @@ export async function createBlobs({ dir, keyFile, hosts, now = Date.now, limits 
   function get(req, res, address) {
     const b = index.get(address);
     if (!b || b.state === 'writing') return send(res, 404, { error: 'not found' });
-    // One fetch at a time: the first to finish whole removes the blob.
-    if (b.state === 'fetching') return send(res, 503, { error: 'being fetched' }, { 'retry-after': '2' });
+    // Enforce expiry between periodic sweeps too. Reads do not renew it.
+    if (now() - b.at >= limits.keepMs) {
+      drop(address);
+      return send(res, 404, { error: 'not found' });
+    }
+    res.setHeader('accept-ranges', 'bytes');
+    const range = req.headers.range === undefined ? undefined : byteRange(req.headers.range, b.size);
+    if (req.headers.range !== undefined && !range) return send(res, 416, { error: 'invalid or unsatisfiable range' }, { 'content-range': `bytes */${b.size}` });
     let stream;
     try {
       if (statSync(file(address, b)).size !== b.size) throw new Error('changed');
-      stream = createReadStream(file(address, b));
+      stream = createReadStream(file(address, b), range);
     } catch {
       drop(address);
       return send(res, 404, { error: 'not found' });
     }
-    b.state = 'fetching';
-    res.writeHead(200, { 'content-type': 'application/octet-stream', 'content-length': String(b.size), 'cache-control': 'no-store' });
-    pipeline(stream, res, (err) => {
-      if (err) { b.state = 'kept'; log(`blob get host=${b.host} size=${b.size} status=cut`); return; }
-      drop(address);
-      log(`blob get host=${b.host} size=${b.size} status=200`);
+    const status = range ? 206 : 200;
+    res.writeHead(status, {
+      'content-type': 'application/octet-stream',
+      'content-length': String(range ? range.end - range.start + 1 : b.size),
+      'cache-control': 'no-store',
+      ...(range ? { 'content-range': `bytes ${range.start}-${range.end}/${b.size}` } : {}),
     });
+    pipeline(stream, res, (err) => {
+      log(`blob get host=${b.host} size=${b.size} status=${err ? 'cut' : status}`);
+    });
+  }
+
+  function acknowledge(res, address) {
+    const b = index.get(address);
+    // A receipt must not remove an upload that has not arrived yet.
+    if (b?.state === 'writing') return send(res, 409, { error: 'upload in progress' });
+    drop(address);
+    if (b) log(`blob delete host=${b.host} size=${b.size} status=204`);
+    res.writeHead(204, { 'cache-control': 'no-store' }).end();
   }
 
   async function request(req, res) {
@@ -209,6 +250,7 @@ export async function createBlobs({ dir, keyFile, hosts, now = Date.now, limits 
       } else if (!ADDRESS.test(name)) send(res, 404, { error: 'not found' });
       else if (req.method === 'PUT') put(req, res, name);
       else if (req.method === 'GET') get(req, res, name);
+      else if (req.method === 'DELETE') acknowledge(res, name);
       else send(res, 405, { error: 'method not allowed' });
     } catch (e) {
       log(`blob error=${String(e?.message ?? e)}`);
