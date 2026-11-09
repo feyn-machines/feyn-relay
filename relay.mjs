@@ -1,7 +1,7 @@
 // The shared relay: @byokit/relay on a plain Node HTTP server, with the blob
 // endpoint of the Feyn client design (section 6.3) in the same process. The
 // relay routes ciphertext between machines and devices and keeps no
-// messages; the blob endpoint keeps ciphertext files for one fetch or a day;
+// messages; the blob endpoint keeps ciphertext until receipt or a day;
 // the OAuth callback keeps a code, in memory, for one fetch or ten minutes;
 // the join routes let a machine join and ask for its people's tickets
 // (relay distribution design, section 4); the admin page lets the operator

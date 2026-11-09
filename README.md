@@ -5,8 +5,8 @@ HTTP server, and, in the same process, the blob endpoint of the
 Feyn client design (feyn-os, `docs/superpowers/specs/2026-10-12-feyn-client-design.md`),
 section 6.3, and the join routes and admin page of the relay
 distribution design (feyn-os, `docs/superpowers/specs/2026-10-22-relay-distribution-design.md`). The relay routes ciphertext between machines and devices and
-keeps no messages. The blob endpoint keeps ciphertext files, each for one
-fetch or 24 hours. Nothing here holds a key that opens anything.
+keeps no messages. The blob endpoint keeps ciphertext files until the receiver
+acknowledges receipt or for 24 hours. Nothing here holds a key that opens anything.
 
 Status: 0.3.2 written and tested on loopback on 2026-10-22; 0.3.0 was the first image
 pushed; 0.3.2 drops the relay statement (owner, 2026-10-22: not for now). **Not deployed.** What runs on the relay server today is the
@@ -129,8 +129,9 @@ sign out).
 | --- | --- |
 | `GET /feyn/v1/blobs/key` | `{key}`: the endpoint's X25519 public key, base64url |
 | `PUT /feyn/v1/blobs/<address>` | checks the token; `content-length` must be the size the token names and at most 51 MiB; streams the body to disk; `201`. An address that is there already: `200`, the body dropped |
-| `GET /feyn/v1/blobs/<address>` | streams the file and **deletes it when the response has been sent whole**; `404` when absent; `503` with `retry-after` while another fetch of it is under way |
-| `OPTIONS` on both | CORS: `access-control-allow-origin: *`, methods `GET, PUT, OPTIONS`, headers `content-type` and the three `x-feyn-*` |
+| `GET /feyn/v1/blobs/<address>` | `200` streams the whole file; a single byte `Range` returns `206` with `Content-Range` and `Content-Length`; `416` with `Content-Range: bytes */<size>` for an invalid or unsatisfiable range; `404` when absent or expired. Whole and range sends retain the file; concurrent readers are allowed |
+| `DELETE /feyn/v1/blobs/<address>` | receiver acknowledgement: removes the file and frees its quota; `204` even if already absent; `409` while its upload is in progress |
+| `OPTIONS` on these | CORS: `access-control-allow-origin: *`, methods `GET, PUT, DELETE, OPTIONS`, headers `content-type`, `range` and the three `x-feyn-*`; exposes `content-range`, `content-length` and `accept-ranges` |
 
 `<address>` is 32 random bytes in base64url (43 characters), made by a
 host's connector. Knowing it is what allows a fetch; what is fetched is
@@ -143,7 +144,7 @@ ciphertext.
 | `401` | one of the three headers is missing |
 | `403` | the host is not enrolled (or was revoked), the expiry has passed or is more than 15 minutes ahead, or the token does not match the address, the size and the expiry |
 | `411` | no `content-length` |
-| `413` | over 51 MiB (the connection is closed without reading the body), or this host's unfetched blobs would pass 500 MiB |
+| `413` | over 51 MiB (the connection is closed without reading the body), or this host's retained blobs would pass 500 MiB |
 | `507` | all blobs would pass 2 GiB, or the disk is full |
 
 ### Who may upload
@@ -169,20 +170,31 @@ connector hands such headers to its person's paired devices
 
 ### What is kept, and what the server learns
 
-A file `<blob dir>/<address>.<host id>` per unfetched blob, and
+A file `<blob dir>/<address>.<host id>` per retained blob, and
 `<name>.part` while one is arriving; the file's size and time are the
 record. At start the directory is read back, part files are removed, and
 anything older than 24 hours is swept; the sweep runs again every ten
-minutes. The log has one line per upload and fetch with the host id, the
+minutes. Expired blobs cannot be fetched between sweeps either. The log has
+one line per upload, fetch and acknowledgement with the host id, the
 size and the status, and never an address.
 
 The server learns that a person-on-machine moved a file of about that size
 at that time. It does not learn a name, a type, a key or any content.
 Sizes are not padded.
 
-"Sent whole" is the moment the last byte has left this process. A proxy in
-front can still lose the tail on its own leg; the side that fetched then
-asks for the file to be uploaded again.
+A successful server send is not proof of receipt. Receivers request bounded
+ranges (`bytes=N-M`) or an open-ended range (`bytes=N-`) over the existing
+ciphertext; suffix ranges (`bytes=-N`) are supported too. A range ending past
+EOF is clamped to the final byte; multiple ranges are refused with `416`.
+Every successful GET includes `Accept-Ranges: bytes`. An empty blob has a
+whole-file `200` response, and no satisfiable range.
+
+Only after verification and durable save does the receiver send DELETE to
+the same URL. Address knowledge permits both reads and acknowledgement;
+upload token checks are unchanged. Reads never extend the 24-hour lifetime.
+Retained blobs keep counting toward the existing 500 MiB per-host / 2 GiB
+aggregate quotas until acknowledgement or expiry. Older clients that do not
+acknowledge remain compatible but use quota until expiry.
 
 ## Re-enrolment
 
@@ -276,8 +288,8 @@ experiment host, upload 51 MiB with a token made there and fetch it once
 
 Losing `state/blob-key.json` is harmless: a new key pair is made, and
 connectors read the new public key within ten minutes, or at once when an
-upload of their own is refused. Removing `blobs/` loses only files nobody
-had fetched yet; the sender uploads again.
+upload of their own is refused. Removing `blobs/` loses retained ciphertext;
+an interrupted receiver then needs the sender to upload again.
 
 ## Untested until the server
 
